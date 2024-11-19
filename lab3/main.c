@@ -1,25 +1,28 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
-#include <string.h>
 
 void printPointerValues(void *before, void *after) {
     printf("Pointer before realloc: %p\n", before);
     printf("Pointer after realloc: %p\n", after);
 }
 
-double measureReallocTime(void **array, size_t newSize) {
+char* measureReallocTime(char *array, size_t newSize) {
     clock_t start, end;
     start = clock();
-    *array = realloc(*array, newSize);
+    char *newArray = realloc(array, newSize);
     end = clock();
 
-    if (*array == NULL) {
+    if (newArray == NULL) {
         fprintf(stderr, "Error: can not allocate memory. Exiting...\n");
+        free(array);
         exit(1);
     }
 
-    return (double)(end - start) / CLOCKS_PER_SEC * 1000;
+    double timeTaken = (double)(end - start) / CLOCKS_PER_SEC * 1000;
+    printf("Time taken to reallocate memory: %.2f ms\n", timeTaken);
+
+    return newArray;
 }
 
 void fillArray(char *array, size_t size, char value) {
@@ -55,6 +58,8 @@ int main() {
 
     if (arrayA == NULL || arrayB == NULL) {
         fprintf(stderr, "Error: can not allocate memory. Exiting...\n");
+        free(arrayA);
+        free(arrayB);
         exit(1);
     }
 
@@ -65,25 +70,21 @@ int main() {
 
     printf("Increasing arrays sizes...\n");
     void *pointerBeforeA = arrayA;
-    double reallocTimeA = measureReallocTime((void **)&arrayA, sizeA * 2);
+    arrayA = measureReallocTime(arrayA, sizeA * 2);
     printPointerValues(pointerBeforeA, arrayA);
-    printf("Time taken to increase A: %.2f ms\n", reallocTimeA);
 
     void *pointerBeforeB = arrayB;
-    double reallocTimeB = measureReallocTime((void **)&arrayB, sizeB * 2);
+    arrayB = measureReallocTime(arrayB, sizeB * 2);
     printPointerValues(pointerBeforeB, arrayB);
-    printf("Time taken to increase B: %.2f ms\n", reallocTimeB);
 
     printf("Decreasing arrays sizes...\n");
     pointerBeforeA = arrayA;
-    reallocTimeA = measureReallocTime((void **)&arrayA, sizeA);
+    arrayA = measureReallocTime(arrayA, sizeA);
     printPointerValues(pointerBeforeA, arrayA);
-    printf("Time taken to decrease A: %.2f ms\n", reallocTimeA);
 
     pointerBeforeB = arrayB;
-    reallocTimeB = measureReallocTime((void **)&arrayB, sizeB);
+    arrayB = measureReallocTime(arrayB, sizeB);
     printPointerValues(pointerBeforeB, arrayB);
-    printf("Time taken to decrease B: %.2f ms\n", reallocTimeB);
 
     printf("Freeing memory...\n");
     free(arrayA);
