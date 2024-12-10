@@ -35,6 +35,18 @@ typedef struct LinkedList {
     int length;
 } LinkedList;
 
+typedef struct Snapshot {
+    LinkedList *list;
+    struct Snapshot *next;
+} Snapshot;
+
+typedef struct SnapshotHistory {
+    Snapshot *head;
+    int length;
+    char directoryName[256];
+    time_t scanned;
+} SnapshotHistory;
+
 LinkedList *createLinkedList(Node *head) {
     LinkedList *list = (LinkedList *) malloc(sizeof(LinkedList));
     if (list == NULL) {
@@ -185,6 +197,28 @@ void printFileInfo(LinkedList *list, const char *name) {
     printf("Имя: %s\n", found->data.name);
     printf("Время создания: %ld\n", found->data.creation_time);
     printf("Inode: %lu\n", (unsigned long)found->data.inode);
+}
+
+Snapshot *createSnapshot(LinkedList *list, const char *directoryName) {
+    Snapshot *snapshot = (Snapshot *) malloc(sizeof(Snapshot));
+    if (snapshot == NULL) {
+        printf("Error: cannot allocate memory for a new snapshot\n");
+        exit(1);
+    }
+
+    snapshot->list = createLinkedList(list->head);
+    snapshot->next = NULL;
+
+    return snapshot;
+}
+
+void addSnapshot(SnapshotHistory *history, Snapshot *snapshot, const char *directoryName) {
+    snapshot->next = history->head;
+    history->head = snapshot;
+    history->length++;
+
+    strncpy(history->directoryName, directoryName, sizeof(history->directoryName) - 1);
+    history->scanned = time(NULL);
 }
 
 int main() {
