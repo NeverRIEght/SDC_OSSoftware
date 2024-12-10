@@ -18,6 +18,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <dirent.h>
+#include <time.h>
 
 typedef struct FileInfo {
     char name[256];
@@ -38,14 +39,24 @@ typedef struct LinkedList {
 typedef struct Snapshot {
     LinkedList *list;
     struct Snapshot *next;
+    char* creation_time;
 } Snapshot;
 
 typedef struct SnapshotHistory {
     Snapshot *head;
     int length;
     char directoryName[256];
-    time_t scanned;
 } SnapshotHistory;
+
+char* getCurrentDateTime() {
+    time_t rawTime;
+    struct tm *timeInfo;
+
+    time(&rawTime);
+    timeInfo = localtime(&rawTime);
+
+    return asctime(timeInfo);
+}
 
 LinkedList *createLinkedList(Node *head) {
     LinkedList *list = (LinkedList *) malloc(sizeof(LinkedList));
@@ -68,15 +79,19 @@ LinkedList *createLinkedList(Node *head) {
     return list;
 }
 
-void calculateLength(LinkedList* list) {
-    int length = 0;
-    Node *current = list->head;
-    while (current != NULL) {
-        length++;
-        current = current->next;
+void checkDirectory(char path[512]) {
+    if (path == NULL) {
+        printf("Error: path is null\n");
+        exit(1);
     }
 
-    list->length = length;
+    DIR* dir = opendir(path);
+    if (dir) {
+        closedir(dir);
+    } else {
+        printf("Error: directory does not exists\n");
+        exit(1);
+    }
 }
 
 Node *createNode(const char *name, time_t creation_time, ino_t inode) {
@@ -100,7 +115,7 @@ Node *createNode(const char *name, time_t creation_time, ino_t inode) {
     return newNode;
 }
 
-void insertNode(LinkedList *list, Node* newNode) {
+void insertNode(LinkedList *list, Node *newNode) {
     newNode->next = list->head;
     list->head = newNode;
     list->length++;
@@ -194,73 +209,157 @@ void printFileInfo(LinkedList *list, const char *name) {
         return;
     }
 
-    printf("Имя: %s\n", found->data.name);
-    printf("Время создания: %ld\n", found->data.creation_time);
-    printf("Inode: %lu\n", (unsigned long)found->data.inode);
+    printf("Name: %s\n", found->data.name);
+    printf("Creation timestamp: %ld\n", found->data.creation_time);
+    printf("Inode: %lu\n", (unsigned long) found->data.inode);
 }
 
-Snapshot *createSnapshot(LinkedList *list, const char *directoryName) {
+SnapshotHistory *createSnapshotHistory(char *directoryName) {
+    SnapshotHistory *history = (SnapshotHistory *) malloc(sizeof(SnapshotHistory));
+    if (history == NULL) {
+        printf("Error: cannot allocate memory for a new SnapshotHistory\n");
+        exit(1);
+    }
+
+    history->head = nullptr;
+    history->length = 0;
+    strncpy(history->directoryName, directoryName, sizeof(history->directoryName) - 1);
+
+    return history;
+}
+
+Snapshot* createSnapshot(SnapshotHistory *history) {
     Snapshot *snapshot = (Snapshot *) malloc(sizeof(Snapshot));
     if (snapshot == NULL) {
         printf("Error: cannot allocate memory for a new snapshot\n");
         exit(1);
     }
 
-    snapshot->list = createLinkedList(list->head);
-    snapshot->next = NULL;
+    LinkedList *snapshotList = createLinkedList(nullptr);
+    scanDirectory(snapshotList, history->directoryName);
+    snapshot->list = snapshotList;
+    snapshot->creation_time = getCurrentDateTime();
 
+    printf("Created snapshot for \"%s\" directory (%s)\n", history->directoryName, snapshot->creation_time);
     return snapshot;
 }
 
-void addSnapshot(SnapshotHistory *history, Snapshot *snapshot, const char *directoryName) {
-    snapshot->next = history->head;
-    history->head = snapshot;
-    history->length++;
 
-    strncpy(history->directoryName, directoryName, sizeof(history->directoryName) - 1);
-    history->scanned = time(NULL);
+
+void addSnapshotToHistory(SnapshotHistory *history, Snapshot *snapshot) {
+    // History is limited to 10 snapshots
+    if (history->length < 10) {
+        snapshot->next = history->head;
+        history->head = snapshot;
+        history->length++;
+    } else {
+        // Remove the oldest snapshot
+        Snapshot *current = history->head;
+        while (current->next->next != NULL) {
+            current = current->next;
+        }
+        free(current->next);
+        current->next = nullptr;
+        snapshot->next = history->head;
+        history->head = snapshot;
+    }
+}
+
+Snapshot* selectSnapshot(SnapshotHistory* history) {
+    printf("SnapshotHistory:\n");
+    Snapshot *current = history->head;
+    int i = 0;
+    while (current != NULL) {
+        printf("%d. %s\n", i, current->creation_time);
+        current = current->next;
+        i++;
+    }
+
+    int index;
+    printf("Select snapshot index (0 - %d): ", history->length - 1);
+    scanf("%d", &index);
+
+    if (index < 0 || index >= history->length) {
+        printf("Error: invalid index\n");
+        return selectSnapshot(history);
+    }
+
+    current = history->head;
+    for (int i = 0; i < index; i++) {
+        current = current->next;
+    }
+
+    return current;
+}
+
+
+
+void cleanUp(SnapshotHistory *history) {
+    Snapshot *current = history->head;
+    while (current != NULL) {
+        Snapshot *temp = current;
+        current = current->next;
+        freeList(temp->list);
+        free(temp);
+    }
+    free(history);
 }
 
 int main() {
-    LinkedList *list = createLinkedList(NULL);
     char path[512];
-    char input[256];
-    int choice;
 
-    printf("Введите путь к каталогу: ");
+    printf("Enter path to directory: ");
     scanf("%s", path);
 
+    checkDirectory(path);
+    SnapshotHistory *history = createSnapshotHistory(path);
+    char object_name[256];
+    int choice;
+
     while (1) {
-        printf("\nВыберите операцию:\n");
-        printf("1. Просканировать каталог\n");
-        printf("2. Вывести список объектов\n");
-        printf("3. Вывести информацию об объекте\n");
-        printf("4. Выход\n");
-        printf("Ваш выбор: ");
+        printf("\nSelect operation:\n");
+        printf("1. Scan directory\n");
+        printf("2. Get objects list\n");
+        printf("3. Get object details\n");
+        printf("4. Exit\n");
+        printf("Your selection: ");
         scanf("%d", &choice);
 
         switch (choice) {
             case 1:
-                scanDirectory(list, path);
-                printf("Каталог '%s' просканирован\n", path);
+                addSnapshotToHistory(history, createSnapshot(history));
                 break;
             case 2:
-                printList(list);
+                Snapshot* snap = selectSnapshot(history);
+                printf("Selected snapshot: %s\n", snap->creation_time);
+                printList(snap->list);
+
+                printf("Enter object name to show info: ");
+                scanf("%s", object_name);
+
+                printFileInfo(snap->list, object_name);
                 break;
             case 3:
-                printf("Введите имя объекта: ");
-                scanf("%s", input);
-                printFileInfo(list, input);
+                snap = selectSnapshot(history);
+                printf("Selected snapshot: %s\n", snap->creation_time);
+                printList(snap->list);
+
+                printf("Enter object name to show info: ");
+                scanf("%s", object_name);
+
+                printFileInfo(snap->list, object_name);
                 break;
             case 4:
-                freeList(list);
-                free(list);
-                printf("Выход из программы\n");
+                printf("Exiting...\n");
+                cleanUp(history);
                 return 0;
             default:
-                printf("Неверный выбор, попробуйте снова\n");
+                printf("Incorrect input, please try again.\n");
         }
     }
+
+    cleanUp(history);
+    return 0;
 }
 
 
