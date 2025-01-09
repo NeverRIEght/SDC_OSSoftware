@@ -1,84 +1,130 @@
 #include <stdio.h>
-#include <stdlib.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <time.h>
-#include <sys/types.h>
 #include <sys/wait.h>
 #include <string.h>
-#include <sys/file.h>
+#include <_stdlib.h>
 
 #define FILENAME "output.txt"
 #define NUM_PROCESSES 5
 
-void get_current_time(char *buffer, size_t size) {
+void getCurrentDateTimeZ(char *buffer, size_t size) {
     time_t now = time(NULL);
     struct tm *tm_info = localtime(&now);
     strftime(buffer, size, "%Y-%m-%dT%H:%M:%S%z", tm_info);
 }
 
-int count_greetings_in_file(const char *greeting) {
+int countGreetingsInFile(const char *greeting) {
     int fd = open(FILENAME, O_RDONLY);
     if (fd < 0) {
-        perror("Error opening file for reading");
-        return 0; // Если файл не существует, считаем, что приветствий нет
+        perror("Error: can not open file for reading");
+        return 0;
+    }
+
+    if (flock(fd, LOCK_SH) < 0) {
+        perror("Error: can not lock file for reading");
+        close(fd);
+        return 0;
     }
 
     char buffer[1024];
-    ssize_t bytes_read;
-    int count = 0;
 
-    // Буфер для текущей строки
-    char line[256];
-    int line_index = 0;
+    char currentLineBuffer[256];
+    int lineIndex = 0;
+    int greetingsCount = 0;
 
-    while ((bytes_read = read(fd, buffer, sizeof(buffer))) > 0) {
-        for (ssize_t i = 0; i < bytes_read; i++) {
-            char c = buffer[i];
-            if (c == '\n' || line_index >= (sizeof(line) - 1)) {
-                // Завершение строки
-                line[line_index] = '\0';
-                if (strstr(line, greeting) != NULL) {
-                    count++;
+    ssize_t bytesRead;
+    while ((bytesRead = read(fd, buffer, sizeof(buffer))) > 0) { // While we have something to read
+        for (ssize_t i = 0; i < bytesRead; i++) { // For each byte in buffer
+            char currentChar = buffer[i];
+
+            // If current char is end of line, or we reached the end of currentLineBuffer
+            if (currentChar == '\n' || lineIndex >= (sizeof(currentLineBuffer) - 1)) {
+                // Line is ended
+                currentLineBuffer[lineIndex] = '\0';
+
+                // If currentLineBuffer contains greeting
+                if (strstr(currentLineBuffer, greeting) != NULL) {
+                    greetingsCount++;
                 }
-                line_index = 0;
+
+                // Reset lineIndex to use it on next line
+                lineIndex = 0;
             } else {
-                // Добавляем символ к текущей строке
-                line[line_index++] = c;
+                // Add char to currentLineBuffer and proceed to next char
+                currentLineBuffer[lineIndex++] = currentChar;
             }
         }
     }
 
-    if (bytes_read < 0) {
-        perror("Error reading file");
+    if (bytesRead < 0) {
+        perror("Error: can not read file");
     }
 
-    // Проверяем последнюю строку, если файл не заканчивается на '\n'
-    if (line_index > 0) {
-        line[line_index] = '\0';
-        if (strstr(line, greeting) != NULL) {
-            count++;
+    // If we did not reach the end of last line
+    if (lineIndex > 0) {
+        // Fix file ending
+        currentLineBuffer[lineIndex] = '\0';
+        if (strstr(currentLineBuffer, greeting) != NULL) {
+            greetingsCount++;
         }
     }
 
-    close(fd);
-    return count;
+    if (flock(fd, LOCK_UN) < 0) {
+        perror("Error: can not unlock file for reading");
+    }
+
+    if (close(fd) < 0) {
+        perror("Error: can not close file");
+        exit(1);
+    }
+
+    return greetingsCount;
+}
+
+void writeGreetingToFile(const char *greeting, pid_t pid) {
+    int fd = open(FILENAME, O_CREAT | O_RDWR | O_APPEND, 0644);
+    if (fd < 0) {
+        perror("Error: can not open file for writing");
+        exit(1);
+    }
+
+    if (flock(fd, LOCK_EX) < 0) {
+        perror("Error: can not lock file for writing");
+        close(fd);
+        exit(1);
+    }
+    
+    char time_str[64];
+    getCurrentDateTimeZ(time_str, sizeof(time_str));
+
+    char buffer[256];
+    snprintf(buffer, sizeof(buffer), "PID: %d, Greeting: '%s', Time: %s\n",
+             pid, greeting, time_str);
+
+    if (write(fd, buffer, strlen(buffer)) < 0) {
+        perror("Error: can not write to file");
+    }
+
+    if (flock(fd, LOCK_UN) < 0) {
+        perror("Error: can not unlock file for writing");
+    }
+
+    if (close(fd) < 0) {
+        perror("Error: can not close file");
+        exit(1);
+    }
 }
 
 int main() {
     const char *greetings[NUM_PROCESSES] = {
-            "Hello from process A!",
-            "Greetings from process B!",
-            "Hi there from process C!",
-            "Welcome from process D!",
-            "Hey from process E!"
+            "Hello!",
+            "Hi!",
+            "Hey!",
+            "Salut!",
+            "Welcome!"
     };
-
-    int fd = open(FILENAME, O_CREAT | O_RDWR | O_APPEND, 0644);
-    if (fd < 0) {
-        perror("Error opening file");
-        exit(1);
-    }
 
     pid_t pids[NUM_PROCESSES];
 
@@ -89,24 +135,16 @@ int main() {
             perror("Error forking");
             exit(1);
         } else if (pid == 0) {
-            flock(fd, LOCK_EX);
+            // Child process
+            int count = countGreetingsInFile(greetings[i]);
 
-            char time_str[32];
-            get_current_time(time_str, sizeof(time_str));
+            printf("PID: %d, Count in file: %d\n", getpid(), count);
 
-            int count = count_greetings_in_file(greetings[i]);
+            writeGreetingToFile(greetings[i], getpid());
 
-            char output[256];
-            snprintf(output, sizeof(output), "PID: %d, Greeting: '%s', Time: %s\n",
-                     getpid(), greetings[i], time_str);
-            write(fd, output, strlen(output));
-
-            printf("Process %d says: '%s' (Launch count: %d)\n", getpid(), greetings[i], count + 1);
-
-            flock(fd, LOCK_UN);
-            close(fd);
             exit(0);
         } else {
+            // Parent process
             pids[i] = pid;
         }
     }
@@ -115,6 +153,5 @@ int main() {
         waitpid(pids[i], NULL, 0);
     }
 
-    close(fd);
     return 0;
 }
